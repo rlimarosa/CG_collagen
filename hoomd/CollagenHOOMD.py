@@ -1,0 +1,293 @@
+# Collagen CG modeling in HOOMD blue
+import argparse
+import datetime
+import itertools
+import os
+import sys
+import yaml
+
+import numpy as np
+import mdtraj
+
+import hoomd
+import hoomd.md as md
+import gsd.hoomd
+
+# Dictionary lookups for the types in the simulation
+getTypebyName = {}
+getTypebyNameBonds = {}
+getTypebyNameAngles = {}
+getTypebyNameDihedrals = {}
+getNamebyType = {}
+sigma_per_nm = 2.0
+
+r_buffer_cell = 0.5
+timestep_size = 0.005
+t_damp = 0.05
+
+# Create a status line maker for our output
+class Status():
+
+    def __init__(self, sim):
+        self.sim = sim
+
+    @property
+    def seconds_remaining(self):
+        try:
+            return (self.sim.final_timestep - self.sim.timestep) / self.sim.tps
+        except ZeroDivisionError:
+            return 0
+
+    @property
+    def etr(self):
+        return str(datetime.timedelta(seconds=self.seconds_remaining))
+
+def parse_args():
+    parser = argparse.ArgumentParser(prog='CollagenHOOMD.py')
+
+    # Options
+    parser.add_argument('--pdb', required=True, help="Path to PDB file")
+    parser.add_argument('--mode',   choices=['cpu','gpu'], required=True, help="Compute mode: cpu or gpu")
+    parser.add_argument('--box',    type=float, default=110.0, help="Box edge length in sigma (default: 110)")
+    opts = parser.parse_args()
+
+    return opts
+
+def print_snapshot(snap):
+    if snap.communicator.rank != 0:
+        return
+
+    # Alias the arrays for ease
+    pos = snap.particles.position  # (N,3)
+    tid = snap.particles.typeid
+    types = snap.particles.types
+
+    print(f"\nSnapshot: {len(pos)} particles")
+    print(f"{'idx':>5s}  {'type':>4s}   {'x':>8s}   {'y':>8s}   {'z':>8s}")
+    print('-'*45)
+    for i, (x,y,z) in enumerate(pos):
+        tname = types[tid[i]]
+        print(f"{i:5d}  {tname:>4s}   {x:8.3f}   {y:8.3f}   {z:8.3f}")
+
+def load_pdb_to_snapshot(pdb_path):
+    print("Loading PDB into HOOMD snapshot")
+    # Load the PDB file with mdtraj
+    traj = mdtraj.load_pdb(pdb_path)
+    positions = traj.xyz[0]  # shape = (n_atoms,3)
+    # Build the names of the atoms, and corresponding typeid (numeric)
+    current_typeid = 0
+    for atom in traj.topology.atoms:
+        if atom.name not in getTypebyName:
+            getTypebyName[atom.name] = current_typeid
+            getNamebyType[current_typeid] = atom.name
+            current_typeid += 1
+
+    # Build an empty hoomd snapshot
+    snap = hoomd.Snapshot()
+    # This is only accessible on rank 0 for the positions...
+    if snap.communicator.rank == 0:
+        snap.particles.N = traj.n_atoms
+        snap.particles.types = list(getTypebyName.keys())
+        snap.particles.position[:] = positions * sigma_per_nm
+        # Loop over particles to assign identity
+        current_atom_idx = 0
+        for atom in traj.topology.atoms:
+            snap.particles.typeid[current_atom_idx] = getTypebyName[atom.name]
+            if atom.name == 'BBP' or atom.name == 'BBO' or atom.name == 'BBG':
+                snap.particles.mass[current_atom_idx] = 3.0
+            elif atom.name == 'HBP' or atom.name == 'HBG':
+                snap.particles.mass[current_atom_idx] = 1.0
+            else:
+                print("Encountered an atom name we don't know, exiting")
+                sys.exit(1)
+            current_atom_idx += 1
+
+    print("Finished reading PDB for coordinates and identity of particles")
+    return snap
+
+def create_triple_helix_from_pdb(pdb_path, box_length):
+    print("Creating triple helix from PDB")
+    # First create the snapshot associated with the positions and types in the PDB file
+    snap = load_pdb_to_snapshot(pdb_path)
+
+    # Bonds are set up in the following way for each 3(5)-mer
+    # HBP           HBG
+    #  |             |
+    # BBP -- BBO -- BBG ->
+    nchains = 3
+    nmer = 12
+    nbeads_per_mer = 5
+    nbonds_per_mer = 4
+    nangles_per_mer = 3
+    ndihedrals_per_mer = 1
+
+    # Linear bonds
+    # Intra-mer
+    getTypebyNameBonds['BBP_BBO'] = 0
+    getTypebyNameBonds['BBO_BBG'] = 1
+    getTypebyNameBonds['BBP_HBP'] = 2
+    getTypebyNameBonds['BBG_HBG'] = 3
+    # Inter-mer
+    getTypebyNameBonds['BBG_BBP'] = 4
+    # Now figure out how many bonds total we have
+    snap.bonds.N = nchains*((nmer * nbonds_per_mer) + (nmer - 1))
+    snap.bonds.types = ['BBP_BBO', 'BBO_BBG', 'BBP_HBP', 'BBG_HBG', 'BBG_BBP']
+
+    # Angular bonds
+    # Intra-mer
+    getTypebyNameAngles['BBP_BBO_BBG'] = 0
+    getTypebyNameAngles['HBP_BBP_BBO'] = 1
+    getTypebyNameAngles['HBG_BBG_BBO'] = 2
+    # Inter-mer
+    getTypebyNameAngles['BBG_BBP_BBO'] = 3
+    # Now figure out how many angles total we have
+    # snap.angles.N = nchains*((nmer * nangles_per_mer) + (nmer - 1))
+
+    # Dihedrals
+    # https://hoomd-blue.readthedocs.io/en/latest/hoomd/md/dihedral/periodic.html
+    # Inter-mer
+    getTypebyNameDihedrals['HBP_BBP_BBG_HBG'] = 0
+    # Intra-mer
+    getTypebyNameDihedrals['HBG_BBG_BBP_HBP'] = 1
+    # Now figure out how many dihedrals we have total
+    # snap.dihedrals.N = nchains*((nmer * ndihedrals_per_mer) + (nmer - 1))
+
+    # March down each chain individually, as this will change the total numbers
+    ibond = 0
+    for ichain in range(3):
+        print("Assigning bonds to chain {}".format(ichain))
+        # March down the -mer chain adding the bonds as we go
+        for imer in range(nmer):
+            print("  Creating i-mer {}".format(imer))
+            # Do a sanity check to make sure that the types from particles matches what we expect in the bonds
+            BBPidx = (ichain * nmer * nbeads_per_mer) + (imer * nbeads_per_mer)
+            HBPidx = BBPidx + 1
+            BBOidx = BBPidx + 2
+            BBGidx = BBPidx + 3
+            HBGidx = BBPidx + 4
+            if snap.particles.types[snap.particles.typeid[BBPidx]] != 'BBP':
+                print("ERROR in BBP identity!")
+                sys.exit(1)
+            if snap.particles.types[snap.particles.typeid[HBPidx]] != 'HBP':
+                print("ERROR in HBP identity!")
+                sys.exit(1)
+            if snap.particles.types[snap.particles.typeid[BBOidx]] != 'BBO':
+                print("ERROR in BBO identity!")
+                sys.exit(1)
+            if snap.particles.types[snap.particles.typeid[BBGidx]] != 'BBG':
+                print("ERROR in BBG identity!")
+                sys.exit(1)
+            if snap.particles.types[snap.particles.typeid[HBGidx]] != 'HBG':
+                print("ERROR in HBG identity!")
+                sys.exit(1)
+            # Now we can assign the bonds
+            snap.bonds.typeid[ibond] = getTypebyNameBonds['BBP_BBO']
+            snap.bonds.group[ibond] = [BBPidx, BBOidx]
+            ibond += 1
+            snap.bonds.typeid[ibond] = getTypebyNameBonds['BBO_BBG']
+            snap.bonds.group[ibond] = [BBOidx, BBGidx]
+            ibond += 1
+            snap.bonds.typeid[ibond] = getTypebyNameBonds['BBP_HBP']
+            snap.bonds.group[ibond] = [BBPidx, HBPidx]
+            ibond += 1
+            snap.bonds.typeid[ibond] = getTypebyNameBonds['BBG_HBG']
+            snap.bonds.group[ibond] = [BBGidx, HBGidx]
+            ibond += 1
+            # If we are not the last imer, add the bond to the next section too
+            if imer < nmer - 1:
+                snap.bonds.typeid[ibond] = getTypebyNameBonds['BBG_BBP']
+                snap.bonds.group[ibond] = [BBGidx, BBPidx + nbeads_per_mer]
+                ibond += 1
+
+    snap.configuration.box = hoomd.Box.cube(L=box_length)
+
+    return snap
+
+if __name__ == "__main__":
+    opts = parse_args()
+    device = (hoomd.device.GPU(notice_level=3) if opts.mode=='gpu'
+              else hoomd.device.CPU(notice_level=3))
+    sim = hoomd.Simulation(device=device, seed=1)
+    print("MPI enabled:", hoomd.version.mpi_enabled)
+
+    # build & inject snapshot
+    #snap = load_pdb_to_snapshot(opts.pdb, opts.box)
+    snap = create_triple_helix_from_pdb(opts.pdb, opts.box)
+    print_snapshot(snap)
+    sim.create_state_from_snapshot(snap)
+
+    # Actually try to run the simulation, first, create the cell list
+    cell = hoomd.md.nlist.Cell(buffer=r_buffer_cell, exclusions = ['bond'])
+
+    ###############################
+    # Bonded, angle, and dihedral interactions
+    ###############################
+    # Assign bonded interaction strengths
+    # Bonds
+    linear_bond = md.bond.Harmonic()
+    # Intra
+    linear_bond.params['BBP_BBO'] = dict(k=100.0, r0=0.5)
+    linear_bond.params['BBO_BBG'] = dict(k=100.0, r0=0.5)
+    linear_bond.params['BBP_HBP'] = dict(k=100.0, r0=0.375)
+    linear_bond.params['BBG_HBG'] = dict(k=100.0, r0=0.375)
+    # Inter
+    linear_bond.params['BBG_BBP'] = dict(k=100.0, r0=0.5)
+
+    ###############################
+    # Integrator, Langevin thermostat
+    ###############################
+    integrator = md.Integrator(dt=timestep_size)
+    integrator.forces.append(linear_bond)
+
+    langevin = md.methods.Langevin(filter=hoomd.filter.All(), kT = 1.0)
+    # XXX This needs double checking for the conversion to damping coefficient
+    langevin.gamma['BBP'] = 3.0 / t_damp
+    langevin.gamma['BBO'] = 3.0 / t_damp
+    langevin.gamma['BBG'] = 3.0 / t_damp
+    langevin.gamma['HBP'] = 1.0 / t_damp
+    langevin.gamma['HBG'] = 1.0 / t_damp
+
+    integrator.methods.append(langevin)
+
+    # Add everything to the simulation system
+    sim.operations.integrator = integrator
+
+    # Thermalize the system
+    sim.run(0)
+    sim.state.thermalize_particle_momenta(hoomd.filter.All(), kT=1.0)
+
+    ###############################################################################
+    # Print information for the main program
+    ###############################################################################
+    # Keep track of the thermodynamic information
+    thermodynamic_properties = md.compute.ThermodynamicQuantities(
+            filter = hoomd.filter.All())
+    sim.operations.computes.append(thermodynamic_properties)
+
+    logger = hoomd.logging.Logger()
+    logger.add(sim, quantities=['timestep', 'walltime', 'tps'])
+    logger.add(thermodynamic_properties)
+    
+    # Display some quantities to a table while running
+    output_logger = hoomd.logging.Logger(categories=['scalar', 'string'])
+    status = Status(sim)
+    output_logger.add(sim, quantities=['timestep', 'tps'])
+    output_logger[('Status', 'etr')] = (status, 'etr', 'string')
+    output_logger.add(thermodynamic_properties, quantities=['kinetic_temperature', 'pressure'])
+    table = hoomd.write.Table(trigger=hoomd.trigger.Periodic(period=1000),
+                              logger=output_logger)
+    sim.operations.writers.append(table)
+
+    # Set up writing out GSD trajectories
+    gsd_writer = hoomd.write.GSD(filename = 'collagen.gsd',
+                                    trigger = hoomd.trigger.Periodic(1000),
+                                    mode = 'wb',
+                                    filter = hoomd.filter.All(),
+                                    logger = logger)
+    sim.operations.writers.append(gsd_writer)
+
+    ###############################################################################
+    # Run the simulation
+    ###############################################################################
+    print(f"--------")
+    sim.run(1e5)
