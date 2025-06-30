@@ -22,8 +22,29 @@ getNamebyType = {}
 sigma_per_nm = 2.0
 
 r_buffer_cell = 0.5
-timestep_size = 0.005
+timestep_size = 0.001
 t_damp = 0.05
+
+sigma_lj = {}
+sigma_lj[('BB', 'BB')] = 1.0
+sigma_lj[('BB', 'HB')] = 0.65
+sigma_lj[('HBa', 'HBd')] = 0.3
+sigma_lj[('HBa', 'HBa')] = 0.7
+sigma_lj[('HBd', 'HBd')] = 0.7
+
+cutoff_lj = {}
+cutoff_lj[('BB', 'BB')] = np.power(2.0, 1/6.0) * sigma_lj[('BB', 'BB')]
+cutoff_lj[('BB', 'HB')] = np.power(2.0, 1/6.0) * sigma_lj[('BB', 'HB')]
+cutoff_lj[('HBa', 'HBd')] = 0.570
+cutoff_lj[('HBa', 'HBa')] = np.power(2.0, 1/6.0) * sigma_lj[('HBa', 'HBa')]
+cutoff_lj[('HBd', 'HBd')] = np.power(2.0, 1/6.0) * sigma_lj[('HBd', 'HBd')]
+
+epsilon_lj = {}
+epsilon_lj[('BB', 'BB')] = 1.0
+epsilon_lj[('BB', 'HB')] = 1.0
+epsilon_lj[('HBa', 'HBd')] = 50.4
+epsilon_lj[('HBa', 'HBa')] = 1.0
+epsilon_lj[('HBd', 'HBd')] = 1.0
 
 # Create a status line maker for our output
 class Status():
@@ -234,10 +255,66 @@ if __name__ == "__main__":
     linear_bond.params['BBG_BBP'] = dict(k=100.0, r0=0.5)
 
     ###############################
+    # Non-bonded interactions
+    ###############################
+    wca = md.pair.LJ(nlist = cell)
+    wca.mode = 'shift'
+    # BBO <--> BBO
+    wca.params[('BBO', 'BBO')] = dict(epsilon=epsilon_lj[('BB', 'BB')], sigma=sigma_lj[('BB', 'BB')])
+    wca.r_cut['BBO', 'BBO'] = cutoff_lj[('BB', 'BB')]
+    # BBO <--> BBP
+    wca.params[('BBO', 'BBP')] = dict(epsilon=epsilon_lj[('BB', 'BB')], sigma=sigma_lj[('BB', 'BB')])
+    wca.r_cut['BBO', 'BBP'] = cutoff_lj[('BB', 'BB')]
+    # BBO <--> BBG
+    wca.params[('BBO', 'BBG')] = dict(epsilon=epsilon_lj[('BB', 'BB')], sigma=sigma_lj[('BB', 'BB')])
+    wca.r_cut['BBO', 'BBG'] = cutoff_lj[('BB', 'BB')]
+    # BBO <--> HBP
+    wca.params[('BBO', 'HBP')] = dict(epsilon=epsilon_lj[('BB', 'HB')], sigma=sigma_lj[('BB', 'HB')])
+    wca.r_cut['BBO', 'HBP'] = cutoff_lj[('BB', 'HB')]
+    # BBO <--> HBG
+    wca.params[('BBO', 'HBG')] = dict(epsilon=epsilon_lj[('BB', 'HB')], sigma=sigma_lj[('BB', 'HB')])
+    wca.r_cut['BBO', 'HBG'] = cutoff_lj[('BB', 'HB')]
+
+    # BBP <--> BBP
+    wca.params[('BBP', 'BBP')] = dict(epsilon=epsilon_lj[('BB', 'BB')], sigma=sigma_lj[('BB', 'BB')])
+    wca.r_cut['BBP', 'BBP'] = cutoff_lj[('BB', 'BB')]
+    # BBP <--> BBG
+    wca.params[('BBP', 'BBG')] = dict(epsilon=epsilon_lj[('BB', 'BB')], sigma=sigma_lj[('BB', 'BB')])
+    wca.r_cut['BBP', 'BBG'] = cutoff_lj[('BB', 'BB')]
+    # BBP <--> HBP
+    wca.params[('BBP', 'HBP')] = dict(epsilon=epsilon_lj[('BB', 'HB')], sigma=sigma_lj[('BB', 'HB')])
+    wca.r_cut['BBP', 'HBP'] = cutoff_lj[('BB', 'HB')]
+    # BBP <--> HBG
+    wca.params[('BBP', 'HBG')] = dict(epsilon=epsilon_lj[('BB', 'HB')], sigma=sigma_lj[('BB', 'HB')])
+    wca.r_cut['BBP', 'HBG'] = cutoff_lj[('BB', 'HB')]
+
+    # BBG <--> BBG
+    wca.params[('BBG', 'BBG')] = dict(epsilon=epsilon_lj[('BB', 'BB')], sigma=sigma_lj[('BB', 'BB')])
+    wca.r_cut['BBG', 'BBG'] = cutoff_lj[('BB', 'BB')]
+    # BBG <--> HBP
+    wca.params[('BBG', 'HBP')] = dict(epsilon=epsilon_lj[('BB', 'HB')], sigma=sigma_lj[('BB', 'HB')])
+    wca.r_cut['BBG', 'HBP'] = cutoff_lj[('BB', 'HB')]
+    # BBG <--> HBG
+    wca.params[('BBG', 'HBG')] = dict(epsilon=epsilon_lj[('BB', 'HB')], sigma=sigma_lj[('BB', 'HB')])
+    wca.r_cut['BBG', 'HBG'] = cutoff_lj[('BB', 'HB')]
+
+    # HBP <--> HBP
+    wca.params[('HBP', 'HBP')] = dict(epsilon=epsilon_lj[('HBa', 'HBa')], sigma=sigma_lj[('HBa', 'HBa')])
+    wca.r_cut['HBP', 'HBP'] = cutoff_lj[('HBa', 'HBa')]
+    # HBP <--> HBG
+    wca.params[('HBP', 'HBG')] = dict(epsilon=epsilon_lj[('HBa', 'HBd')], sigma=sigma_lj[('HBa', 'HBd')])
+    wca.r_cut['HBP', 'HBG'] = cutoff_lj[('HBa', 'HBd')]
+
+    # HBG <--> HBG
+    wca.params[('HBG', 'HBG')] = dict(epsilon=epsilon_lj[('HBd', 'HBd')], sigma=sigma_lj[('HBd', 'HBd')])
+    wca.r_cut['HBG', 'HBG'] = cutoff_lj[('HBd', 'HBd')]
+
+    ###############################
     # Integrator, Langevin thermostat
     ###############################
     integrator = md.Integrator(dt=timestep_size)
     integrator.forces.append(linear_bond)
+    integrator.forces.append(wca)
 
     langevin = md.methods.Langevin(filter=hoomd.filter.All(), kT = 1.0)
     # XXX This needs double checking for the conversion to damping coefficient
