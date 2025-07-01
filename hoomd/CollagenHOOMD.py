@@ -109,7 +109,7 @@ def load_pdb_to_snapshot(pdb_path):
     if snap.communicator.rank == 0:
         snap.particles.N = traj.n_atoms
         snap.particles.types = list(getTypebyName.keys())
-        snap.particles.position[:] = positions * sigma_per_nm
+        snap.particles.position[:] = positions
         # Loop over particles to assign identity
         current_atom_idx = 0
         for atom in traj.topology.atoms:
@@ -160,9 +160,12 @@ def create_triple_helix_from_pdb(pdb_path, box_length):
     getTypebyNameAngles['HBP_BBP_BBO'] = 1
     getTypebyNameAngles['HBG_BBG_BBO'] = 2
     # Inter-mer
-    getTypebyNameAngles['BBG_BBP_BBO'] = 3
+    getTypebyNameAngles['BBO_BBG_BBP'] = 3
+    getTypebyNameAngles['BBG_BBP_BBO'] = 4
     # Now figure out how many angles total we have
-    # snap.angles.N = nchains*((nmer * nangles_per_mer) + (nmer - 1))
+    snap.angles.N = nchains*((nmer * nangles_per_mer) + 2*(nmer - 1))
+    snap.angles.types = ['BBP_BBO_BBG', 'HBP_BBP_BBO', 'HBG_BBG_BBO',
+                         'BBO_BBG_BBP', 'BBG_BBP_BBO']
 
     # Dihedrals
     # https://hoomd-blue.readthedocs.io/en/latest/hoomd/md/dihedral/periodic.html
@@ -171,10 +174,13 @@ def create_triple_helix_from_pdb(pdb_path, box_length):
     # Intra-mer
     getTypebyNameDihedrals['HBG_BBG_BBP_HBP'] = 1
     # Now figure out how many dihedrals we have total
-    # snap.dihedrals.N = nchains*((nmer * ndihedrals_per_mer) + (nmer - 1))
+    snap.dihedrals.N = nchains*((nmer * ndihedrals_per_mer) + (nmer - 1))
+    snap.dihedrals.types = ['HBP_BBP_BBG_HBG', 'HBG_BBG_BBP_HBP']
 
     # March down each chain individually, as this will change the total numbers
     ibond = 0
+    iangle = 0
+    idihedral = 0
     for ichain in range(3):
         print("Assigning bonds to chain {}".format(ichain))
         # March down the -mer chain adding the bonds as we go
@@ -214,11 +220,37 @@ def create_triple_helix_from_pdb(pdb_path, box_length):
             snap.bonds.typeid[ibond] = getTypebyNameBonds['BBG_HBG']
             snap.bonds.group[ibond] = [BBGidx, HBGidx]
             ibond += 1
+            # Angles
+            snap.angles.typeid[iangle] = getTypebyNameAngles['BBP_BBO_BBG']
+            snap.angles.group[iangle] = [BBPidx, BBOidx, BBGidx]
+            iangle += 1
+            snap.angles.typeid[iangle] = getTypebyNameAngles['HBP_BBP_BBO']
+            snap.angles.group[iangle] = [HBPidx, BBPidx, BBOidx]
+            iangle += 1
+            snap.angles.typeid[iangle] = getTypebyNameAngles['HBG_BBG_BBO']
+            snap.angles.group[iangle] = [HBGidx, BBGidx, BBOidx]
+            iangle += 1
+            # Dihedrals
+            snap.dihedrals.typeid[idihedral] = getTypebyNameDihedrals['HBP_BBP_BBG_HBG']
+            snap.dihedrals.group[idihedral] = [HBPidx, BBPidx, BBGidx, HBGidx]
+            idihedral += 1
             # If we are not the last imer, add the bond to the next section too
             if imer < nmer - 1:
+                # Bonds
                 snap.bonds.typeid[ibond] = getTypebyNameBonds['BBG_BBP']
                 snap.bonds.group[ibond] = [BBGidx, BBPidx + nbeads_per_mer]
                 ibond += 1
+                # Angles
+                snap.angles.typeid[iangle] = getTypebyNameAngles['BBO_BBG_BBP']
+                snap.angles.group[iangle] = [BBOidx, BBGidx, BBPidx + nbeads_per_mer]
+                iangle += 1
+                snap.angles.typeid[iangle] = getTypebyNameAngles['BBG_BBP_BBO']
+                snap.angles.group[iangle] = [BBGidx, BBPidx + nbeads_per_mer, BBOidx + nbeads_per_mer]
+                iangle += 1
+                # Dihedrals
+                snap.dihedrals.typeid[idihedral] = getTypebyNameDihedrals['HBG_BBG_BBP_HBP']
+                snap.dihedrals.group[idihedral] = [HBGidx, BBGidx, BBPidx + nbeads_per_mer, HBPidx + nbeads_per_mer]
+                idihedral += 1
 
     snap.configuration.box = hoomd.Box.cube(L=box_length)
 
@@ -247,12 +279,30 @@ if __name__ == "__main__":
     # Bonds
     linear_bond = md.bond.Harmonic()
     # Intra
-    linear_bond.params['BBP_BBO'] = dict(k=100.0, r0=0.5)
-    linear_bond.params['BBO_BBG'] = dict(k=100.0, r0=0.5)
-    linear_bond.params['BBP_HBP'] = dict(k=100.0, r0=0.375)
-    linear_bond.params['BBG_HBG'] = dict(k=100.0, r0=0.375)
+    linear_bond.params['BBP_BBO'] = dict(k=1000.0, r0=0.5)
+    linear_bond.params['BBO_BBG'] = dict(k=1000.0, r0=0.5)
+    linear_bond.params['BBP_HBP'] = dict(k=1000.0, r0=0.375)
+    linear_bond.params['BBG_HBG'] = dict(k=1000.0, r0=0.375)
     # Inter
-    linear_bond.params['BBG_BBP'] = dict(k=100.0, r0=0.5)
+    linear_bond.params['BBG_BBP'] = dict(k=1000.0, r0=0.5)
+
+    # Angles
+    angular_bond = md.angle.Harmonic()
+    # Intra
+    angular_bond.params['BBP_BBO_BBG'] = dict(k=30.0, t0=np.pi)
+    angular_bond.params['HBP_BBP_BBO'] = dict(k=300.0, t0=np.pi/2.0)
+    angular_bond.params['HBG_BBG_BBO'] = dict(k=300.0, t0=np.pi/2.0)
+    # Inter
+    angular_bond.params['BBO_BBG_BBP'] = dict(k=30.0, t0=np.pi)
+    angular_bond.params['BBG_BBP_BBO'] = dict(k=30.0, t0=np.pi)
+
+    # Dihedrals
+    dihedral_bond = md.dihedral.Periodic()
+    # Intra
+    dihedral_bond.params['HBP_BBP_BBG_HBG'] = dict(k=15.0, d=1, n=1, phi0=2.0*np.pi/3.0)
+    # Inter
+    dihedral_bond.params['HBG_BBG_BBP_HBP'] = dict(k=15.0, d=-1, n=1, phi0=2.0*np.pi/3.0)
+
 
     ###############################
     # Non-bonded interactions
@@ -314,6 +364,8 @@ if __name__ == "__main__":
     ###############################
     integrator = md.Integrator(dt=timestep_size)
     integrator.forces.append(linear_bond)
+    integrator.forces.append(angular_bond)
+    integrator.forces.append(dihedral_bond)
     integrator.forces.append(wca)
 
     langevin = md.methods.Langevin(filter=hoomd.filter.All(), kT = 1.0)
@@ -367,4 +419,4 @@ if __name__ == "__main__":
     # Run the simulation
     ###############################################################################
     print(f"--------")
-    sim.run(1e5)
+    sim.run(1e6)
