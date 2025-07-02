@@ -24,7 +24,7 @@ sigma_per_nm = 2.0
 r_buffer_cell = 0.5
 timestep_size = 0.001
 t_damp = 0.05
-kT = 10.0
+kT = 1.0
 
 sigma_lj = {}
 sigma_lj[('BB', 'BB')] = 1.0
@@ -302,7 +302,7 @@ if __name__ == "__main__":
     # Intra
     dihedral_bond.params['HBP_BBP_BBG_HBG'] = dict(k=15.0, d=1, n=1, phi0=2.0*np.pi/3.0)
     # Inter
-    dihedral_bond.params['HBG_BBG_BBP_HBP'] = dict(k=15.0, d=-1, n=1, phi0=2.0*np.pi/3.0)
+    dihedral_bond.params['HBG_BBG_BBP_HBP'] = dict(k=15.0, d=1, n=1, phi0=4.0*np.pi/3.0)
 
 
     ###############################
