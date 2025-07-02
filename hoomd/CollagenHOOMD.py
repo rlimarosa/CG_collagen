@@ -24,6 +24,7 @@ sigma_per_nm = 2.0
 r_buffer_cell = 0.5
 timestep_size = 0.001
 t_damp = 0.05
+kT = 10.0
 
 sigma_lj = {}
 sigma_lj[('BB', 'BB')] = 1.0
@@ -368,7 +369,7 @@ if __name__ == "__main__":
     integrator.forces.append(dihedral_bond)
     integrator.forces.append(wca)
 
-    langevin = md.methods.Langevin(filter=hoomd.filter.All(), kT = 1.0)
+    langevin = md.methods.Langevin(filter=hoomd.filter.All(), kT = kT)
     # XXX This needs double checking for the conversion to damping coefficient
     langevin.gamma['BBP'] = 3.0 / t_damp
     langevin.gamma['BBO'] = 3.0 / t_damp
@@ -383,7 +384,7 @@ if __name__ == "__main__":
 
     # Thermalize the system
     sim.run(0)
-    sim.state.thermalize_particle_momenta(hoomd.filter.All(), kT=1.0)
+    sim.state.thermalize_particle_momenta(hoomd.filter.All(), kT = kT)
 
     ###############################################################################
     # Print information for the main program
