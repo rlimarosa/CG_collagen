@@ -1,7 +1,5 @@
 POW Project – Simulation and Analysis of Collagen-Like Peptides with a Defect
 
-This project investigates the behavior of collagen-like peptides where a single (POG) repeat has been replaced by a tryptophan (W)-like bead. This modified system, referred to as POW, is analyzed across different temperatures using coarse-grained molecular dynamics.
-
 ───────────────────────────────────────────────────────────────────────────────
 📁 Folder Structure
 ───────────────────────────────────────────────────────────────────────────────
